@@ -1,0 +1,20 @@
+{
+    "name": "rayxxv/common",
+    "description": "package for the Microservices",
+    "type": "library",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "Rayxxv\\Common\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Rayxxv",
+            "email": "brayencfc@gmail.com"
+        }
+    ],
+    "require": {
+      "laravel/framework": "^12.0"
+    }
+}
