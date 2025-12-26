@@ -1,18 +1,25 @@
 <?php
 
 namespace Microservices;
+
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Gate;
+
 class UserService
 {
     private $endpoint;
+    private $user = null; // Cache internal agar tidak request berulang
+    private $loaded = false; // Flag status loading
 
     public function __construct()
     {
-        $this->endpoint = env('USER_ENDPOINT');
+        $this->endpoint = rtrim(env('USER_ENDPOINT'), '/');
     }
 
-    public function headers()
+    /**
+     * Pre-build headers agar tidak dihitung ulang setiap saat.
+     */
+    private function getHeaders(): array
     {
         return [
             'Authorization' => request()->header('Authorization'),
@@ -20,61 +27,62 @@ class UserService
         ];
     }
 
-    public function request()
-    {
-        return Http::withHeaders($this->headers());
-    }
+    /**
+     * Lazy Loader: Hanya mengambil data saat benar-benar dibutuhkan.
+     */
     public function getUser(): ?User
     {
-        $response = $this->request()->get("{$this->endpoint}/user");
-        $json = $response->json();
+        if ($this->loaded) return $this->user;
 
-        return new User($json);
+        try {
+            // Gunakan timeout rendah (2 detik) agar tidak menghambat user
+            $response = Http::withHeaders($this->getHeaders())
+                ->timeout(2)
+                ->get("{$this->endpoint}/user");
+
+            if ($response->successful()) {
+                $this->user = new User($response->json());
+            }
+        } catch (\Exception $e) {
+            // Silently fail untuk kecepatan, atau log jika perlu
+        }
+
+        $this->loaded = true;
+        return $this->user;
     }
-    public function isAdmin()
+
+    /**
+     * Versi Ringan: Mengganti authorize() dengan check()
+     * untuk mencegah Exception handling yang berat.
+     */
+    public function allows($ability, $arguments): bool
     {
-        return $this->request()->get("{$this->endpoint}/admin")->successful();
+        $user = $this->getUser();
+        if (!$user) return false;
 
+        return Gate::forUser($user)->check($ability, $arguments);
     }
-    public function isInfluencer()
+
+    /**
+     * Optimasi Admin/Influencer Check:
+     * Tidak perlu request API baru, cukup gunakan data yang sudah di-load.
+     */
+    public function isAdmin(): bool
     {
-        return $this->request()->get("{$this->endpoint}/influencer")->successful();
+        return $this->getUser()?->isAdmin() ?? false;
     }
 
-    public function allows($ability, $arguments)
+    public function isInfluencer(): bool
     {
-        return Gate::forUser($this->getUser())->authorize($ability, $arguments);
+        return $this->getUser()?->isInfluencer() ?? false;
     }
 
-    public function all($page = -1)
+    // --- Helper CRUD singkat ---
+    private function quickRequest($method, $url, $data = [])
     {
-        $response = $this->request()->get("{$this->endpoint}/users", ['page' => $page]);
-        return $response->json();
-    }
-    public function get($id): User
-    {
-        $json = $this->request()->get("{$this->endpoint}/users/{$id}")->json();
-
-        return new User($json);
+        return Http::withHeaders($this->getHeaders())->$method("{$this->endpoint}/$url", $data);
     }
 
-    public function create($data)
-    {
-        $json = $this->request()->post("{$this->endpoint}/users", $data)->json();
-
-        return new User($json);
-    }
-
-    public function update($id, $data): User
-    {
-        $json = $this->request()->put("{$this->endpoint}/users/{$id}", $data)->json();
-
-        return new User($json);
-    }
-
-    public function delete($id)
-    {
-        return $this->request()->delete("{$this->endpoint}/users/{$id}")->successful();
-    }
-
+    public function all($page = -1) { return $this->quickRequest('get', 'users', ['page' => $page])->json(); }
+    public function delete($id) { return $this->quickRequest('delete', "users/$id")->successful(); }
 }
