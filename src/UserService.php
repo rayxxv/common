@@ -4,22 +4,19 @@ namespace Microservices;
 
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Log;
+use Microservices\User;
 
 class UserService
 {
     private $endpoint;
-    private $user = null; // Cache internal agar tidak request berulang
-    private $loaded = false; // Flag status loading
 
     public function __construct()
     {
-        $this->endpoint = rtrim(env('USER_ENDPOINT'), '/');
+        $this->endpoint = env('USER_ENDPOINT');
     }
 
-    /**
-     * Pre-build headers agar tidak dihitung ulang setiap saat.
-     */
-    private function getHeaders(): array
+    public function headers()
     {
         return [
             'Authorization' => request()->header('Authorization'),
@@ -27,62 +24,71 @@ class UserService
         ];
     }
 
+    public function request()
+    {
+        return Http::withHeaders($this->headers());
+    }
+
     /**
-     * Lazy Loader: Hanya mengambil data saat benar-benar dibutuhkan.
+     * Mengambil data user dari Service 8001 secara aman.
      */
     public function getUser(): ?User
     {
-        if ($this->loaded) return $this->user;
-
         try {
-            // Gunakan timeout rendah (2 detik) agar tidak menghambat user
-            $response = Http::withHeaders($this->getHeaders())
-                ->timeout(2)
-                ->get("{$this->endpoint}/user");
+            $response = $this->request()->get("{$this->endpoint}/user");
 
             if ($response->successful()) {
-                $this->user = new User($response->json());
+                return new User($response->json());
             }
-        } catch (\Exception $e) {
-            // Silently fail untuk kecepatan, atau log jika perlu
-        }
 
-        $this->loaded = true;
-        return $this->user;
+            // Jika response tidak sukses (misal: 401 Unauthorized dari Service 8001)
+            Log::warning("UserService: Gagal mengambil data user. Status: " . $response->status());
+            return null;
+
+        } catch (\Exception $e) {
+            // Jika terjadi kesalahan koneksi (misal: Port 8001 tidak aktif atau URL salah)
+            Log::error("UserService: Error koneksi ke {$this->endpoint}. Pesan: " . $e->getMessage());
+            return null;
+        }
     }
 
     /**
-     * Versi Ringan: Mengganti authorize() dengan check()
-     * untuk mencegah Exception handling yang berat.
+     * Method ini yang akan dipanggil di Controller.
      */
-    public function allows($ability, $arguments): bool
+    public function allows($ability, $arguments)
     {
         $user = $this->getUser();
-        if (!$user) return false;
 
+        // JIKA USER NULL (Gagal ambil dari service lain),
+        // kita coba gunakan user yang sedang terotentikasi di guard lokal.
+        if (!$user) {
+            $user = auth()->user();
+        }
+
+        // Jika setelah fallback tetap null, berarti user memang tidak login
+        if (!$user) {
+            return false;
+        }
+
+        /**
+         * PENTING: Gunakan check() alih-alih authorize().
+         * check() mengembalikan true/false.
+         * authorize() langsung melempar 403 Forbidden jika gagal.
+         */
         return Gate::forUser($user)->check($ability, $arguments);
     }
 
-    /**
-     * Optimasi Admin/Influencer Check:
-     * Tidak perlu request API baru, cukup gunakan data yang sudah di-load.
-     */
-    public function isAdmin(): bool
+    // --- Method lainnya tetap sama atau sesuaikan dengan try-catch serupa ---
+
+    public function isAdmin()
     {
-        return $this->getUser()?->isAdmin() ?? false;
+        $response = $this->request()->get("{$this->endpoint}/admin");
+        return $response->successful();
     }
 
-    public function isInfluencer(): bool
+    public function isInfluencer()
     {
-        return $this->getUser()?->isInfluencer() ?? false;
+        $response = $this->request()->get("{$this->endpoint}/influencer");
+        return $response->successful();
     }
-
-    // --- Helper CRUD singkat ---
-    private function quickRequest($method, $url, $data = [])
-    {
-        return Http::withHeaders($this->getHeaders())->$method("{$this->endpoint}/$url", $data);
-    }
-
-    public function all($page = -1) { return $this->quickRequest('get', 'users', ['page' => $page])->json(); }
-    public function delete($id) { return $this->quickRequest('delete', "users/$id")->successful(); }
 }
