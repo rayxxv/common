@@ -91,4 +91,36 @@ class UserService
         $response = $this->request()->get("{$this->endpoint}/influencer");
         return $response->successful();
     }
+
+    public function all($page = -1)
+    {
+        $response = $this->request()->get("{$this->endpoint}/users", ['page' => $page]);
+
+        return $response->json();
+    }
+    public function get($id): User
+    {
+        $json = $this->request()->get("{$this->endpoint}/users/{$id}")->json();
+
+        return new User($json);
+    }
+
+    public function create($data)
+    {
+        $json = $this->request()->post("{$this->endpoint}/users", $data)->json();
+
+        return new User($json);
+    }
+
+    public function update($id, $data): User
+    {
+        $json = $this->request()->put("{$this->endpoint}/users/{$id}", $data)->json();
+
+        return new User($json);
+    }
+
+    public function delete($id)
+    {
+        return $this->request()->delete("{$this->endpoint}/users/{$id}")->successful();
+    }
 }
